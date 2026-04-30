@@ -1,0 +1,77 @@
+benchmarks:
+  - name: "vqa_rad"
+    path: "flaviagiammarino/vqa-rad"
+    split: "test"
+    num_samples: 451
+    task_type: "closed_ended"
+    metric: "accuracy"
+    fields:
+      image: "image"
+      question: "question"
+      answer: "answer"
+
+  - name: "slake"
+    path: "BoKelvin/SLAKE"
+    split: "test"
+    num_samples: 1061
+    task_type: "mixed"
+    metric: "accuracy"
+    fields:
+      image: "img_name"
+      question: "question"
+      answer: "answer"
+
+  - name: "pathvqa"
+    path: "flaviagiammarino/path-vqa"
+    split: "test"
+    num_samples: 6719
+    task_type: "mixed"
+    metric: "accuracy"
+    fields:
+      image: "image"
+      question: "question"
+      answer: "answer"
+
+  - name: "pmc_vqa"
+    path: "xmcmic/PMC-VQA"
+    split: "test"
+    num_samples: 10000
+    task_type: "multi_choice"
+    metric: "accuracy"
+    fields:
+      image: "image"
+      question: "question"
+      answer: "answer"
+      options: "options"
+
+  - name: "mmmu_health"
+    path: "MMMU/MMMU"
+    subset: "Health_Medicine"
+    split: "test"
+    num_samples: 150
+    task_type: "multi_choice"
+    metric: "accuracy"
+
+  - name: "medxpertqa_mm"
+    path: "TsinghuaC3I/MedXpertQA"
+    subset: "mm"
+    split: "test"
+    num_samples: 960
+    task_type: "multi_choice"
+    metric: "total_score"
+
+  - name: "gmai_mmbench"
+    path: "GMAI-Lab/GMAI-MMBench"
+    split: "test"
+    num_samples: 2847
+    task_type: "multi_choice"
+    metric: "accuracy"
+
+evaluation:
+  decoding:
+    temperature: 0.0
+    top_p: 1.0
+    max_new_tokens: 128
+    max_new_tokens_baseline: 512
+  num_runs: 5
+  seed: 42

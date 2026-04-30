@@ -1,0 +1,45 @@
+dataset:
+  name: "pubmedvision"
+  stage: 1
+  split: "train"
+  total_samples: 50000
+
+source:
+  type: "huggingface"
+  path: "FreedomIntelligence/PubMedVision"
+  subset: "PubMedVision_Alignment"
+
+fields:
+  image: "image"
+  question: "question"
+  answer: "answer"
+  modality: "modality"
+
+preprocessing:
+  max_seq_length: 512
+  image_resolution: "dynamic"
+  shuffle: true
+  seed: 42
+
+augmentation:
+  random_rotation:
+    enabled: true
+    degrees: 15
+  horizontal_flip:
+    enabled: true
+    probability: 0.5
+  brightness_contrast:
+    enabled: true
+    brightness_delta: 0.1
+    contrast_delta: 0.1
+  color_jitter:
+    enabled: true
+    saturation: 0.1
+    hue: 0.05
+
+dataloader:
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 4
+  persistent_workers: true
+  drop_last: true

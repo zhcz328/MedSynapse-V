@@ -1,0 +1,74 @@
+dataset:
+  name: "rl_mixed"
+  stage: 2
+  total_samples: 4000
+
+sources:
+  - name: "omnimedvqa"
+    type: "huggingface"
+    path: "OpenGVLab/OmniMedVQA"
+    split: "train"
+    num_samples: 3000
+    task_type: "closed_ended"
+    modalities:
+      - "CT"
+      - "MRI"
+      - "X-ray"
+      - "Dermoscopy"
+      - "Fundus"
+      - "OCT"
+      - "Pathology"
+      - "Ultrasound"
+    fields:
+      image: "image"
+      question: "question"
+      answer: "answer"
+      options: "options"
+
+  - name: "slake"
+    type: "huggingface"
+    path: "BoKelvin/SLAKE"
+    split: "train"
+    num_samples: 500
+    task_type: "open_ended"
+    fields:
+      image: "img_name"
+      question: "question"
+      answer: "answer"
+
+  - name: "pathvqa"
+    type: "huggingface"
+    path: "flaviagiammarino/path-vqa"
+    split: "train"
+    num_samples: 500
+    task_type: "open_ended"
+    fields:
+      image: "image"
+      question: "question"
+      answer: "answer"
+
+preprocessing:
+  max_seq_length: 1024
+  image_resolution: "dynamic"
+  shuffle: true
+  seed: 42
+  balance_modalities: true
+
+augmentation:
+  random_rotation:
+    enabled: true
+    degrees: 15
+  horizontal_flip:
+    enabled: true
+    probability: 0.5
+  brightness_contrast:
+    enabled: true
+    brightness_delta: 0.1
+    contrast_delta: 0.1
+
+dataloader:
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 4
+  persistent_workers: true
+  drop_last: false
