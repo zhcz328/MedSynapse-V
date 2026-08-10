@@ -13,6 +13,7 @@ from tqdm import tqdm
 from losses.ntp_loss import NTPLoss
 from engine.lr_scheduler import build_optimizer_and_scheduler
 from utils.checkpointer import CheckpointManager
+from utils.vlm import batch_vlm_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class Stage1WarmupEngine:
         self.epochs = train_cfg.get("epochs", 3)
         self.max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
         self.gradient_accumulation_steps = train_cfg.get("gradient_accumulation_steps", 2)
-        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32"
+        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32" and self.device.type == "cuda"
         self.amp_dtype = torch.bfloat16 if train_cfg.get("mixed_precision") == "bf16" else torch.float16
 
         log_cfg = self.config.get("logging", {})
@@ -95,17 +96,20 @@ class Stage1WarmupEngine:
             min_lr_ratio=sched_cfg.get("min_lr_ratio", 0.0),
         )
 
-        self.scaler = GradScaler(enabled=(self.amp_dtype == torch.float16))
+        self.scaler = GradScaler(enabled=(self.amp_dtype == torch.float16 and self.device.type == "cuda"))
 
     def _forward_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Single forward pass with memory injection and NTP loss."""
-        images = batch.get("pixel_values")
+        images = batch.get("pixel_values_medsam", batch.get("pixel_values"))
         if images is not None:
             images = images.to(self.device)
 
         # Extract anatomical features and synthesize memory
         with torch.no_grad():
-            enc_output = self.model.encoder(images)
+            enc_output = self.model.encoder(
+                images,
+                concept_prompts=batch.get("medsam3_prompt"),
+            )
             encoder_features = enc_output["features"]
 
         # Memory synthesis (gradients flow through P_phi)
@@ -130,6 +134,7 @@ class Stage1WarmupEngine:
         outputs = self.model.vlm(
             inputs_embeds=injected["inputs_embeds"],
             attention_mask=injected["attention_mask"],
+            **self._vlm_batch_kwargs(batch),
             return_dict=True,
         )
 
@@ -153,9 +158,14 @@ class Stage1WarmupEngine:
 
         return {"loss": loss, "token_accuracy": token_acc}
 
+    def _vlm_batch_kwargs(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        return batch_vlm_kwargs(batch, self.device)
+
     def train(self):
         logger.info(f"Starting Stage I warmup: {self.epochs} epochs")
         self.model.memory_sampler.train()
+
+        self.model.to(self.device)
 
         for epoch in range(self.epochs):
             epoch_loss = 0.0
@@ -242,3 +252,6 @@ class Stage1WarmupEngine:
         avg_acc = total_acc / max(num_batches, 1)
         logger.info(f"Eval @ step {self.global_step} | Loss: {avg_loss:.4f} | Acc: {avg_acc:.4f}")
         self.model.memory_sampler.train()
+
+
+MQPMWarmupEngine = Stage1WarmupEngine

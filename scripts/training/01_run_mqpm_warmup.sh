@@ -14,7 +14,7 @@ MASTER_ADDR=${MASTER_ADDR:-localhost}
 CACHE_DIR="${PROJECT_ROOT}/cache/medsam_features"
 if [ ! -d "${CACHE_DIR}" ]; then
     echo "[INFO] MedSAM3 feature cache not found at ${CACHE_DIR}."
-    echo "[INFO] Consider running: python scripts/cache_medsam_features.py"
+    echo "[INFO] Consider running: python scripts/cache_anatomical_priors.py"
 fi
 
 mkdir -p "${OUTPUT_DIR}"

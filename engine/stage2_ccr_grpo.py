@@ -36,6 +36,7 @@ from rewards.accuracy_reward import AccuracyReward
 from rewards.causal_reward import CausalCounterfactualReward
 from engine.lr_scheduler import build_optimizer_and_scheduler
 from utils.checkpointer import CheckpointManager
+from utils.vlm import batch_vlm_kwargs, extract_generated_token_ids, lora_state_dict
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class Stage2GRPOEngine:
         self.train_dataloader = train_dataloader
         self.config = config or {}
         self.output_dir = output_dir
-        self.device = device or torch.device("cuda")
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.local_rank = local_rank
 
         os.makedirs(output_dir, exist_ok=True)
@@ -87,7 +88,7 @@ class Stage2GRPOEngine:
         self.total_steps = train_cfg.get("training_steps", 200)
         self.gradient_accumulation_steps = train_cfg.get("gradient_accumulation_steps", 2)
         self.max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
-        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32"
+        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32" and self.device.type == "cuda"
         self.amp_dtype = torch.bfloat16
 
         log_cfg = self.config.get("logging", {})
@@ -181,6 +182,7 @@ class Stage2GRPOEngine:
             outputs = self.model.vlm.generate(
                 inputs_embeds=injected["inputs_embeds"],
                 attention_mask=injected["attention_mask"],
+                **self._vlm_batch_kwargs(batch),
                 max_new_tokens=self.max_gen_len,
                 temperature=self.temperature,
                 top_p=self.top_p,
@@ -189,7 +191,11 @@ class Stage2GRPOEngine:
                 output_scores=False,
             )
 
-            gen_ids = outputs.sequences[:, injected["inputs_embeds"].shape[1]:]
+            gen_ids = extract_generated_token_ids(
+                outputs.sequences,
+                context_length=batch["input_ids"].shape[1],
+                prompt_ids=batch["input_ids"],
+            )
             gen_texts = self.processor.tokenizer.batch_decode(
                 gen_ids, skip_special_tokens=True
             )
@@ -231,6 +237,7 @@ class Stage2GRPOEngine:
         outputs = self.model.vlm(
             inputs_embeds=full_embeds,
             attention_mask=full_mask,
+            **self._vlm_batch_kwargs(batch),
             return_dict=True,
         )
 
@@ -268,7 +275,7 @@ class Stage2GRPOEngine:
 
     def _train_step(self, batch: Dict) -> Dict[str, float]:
         """Single GRPO training step with composite rewards."""
-        images = batch.get("pixel_values")
+        images = batch.get("pixel_values_medsam", batch.get("pixel_values"))
         if images is not None:
             images = images.to(self.device)
 
@@ -277,9 +284,16 @@ class Stage2GRPOEngine:
 
         # Generate privileged memory and counterfactual memory
         with torch.no_grad():
-            mem_output = self.model.generate_memory_privileged(images)
+            concept_prompts = batch.get("medsam3_prompt")
+            mem_output = self.model.generate_memory_privileged(
+                images,
+                concept_prompts=concept_prompts,
+            )
             memory = mem_output["memory"]
-            memory_intervened = self.model.generate_memory_counterfactual(images)
+            memory_intervened = self.model.generate_memory_counterfactual(
+                images,
+                concept_prompts=concept_prompts,
+            )
 
         # Snapshot reference policy
         self._snapshot_reference_policy()
@@ -289,6 +303,7 @@ class Stage2GRPOEngine:
 
         all_policy_losses = []
         all_rewards = []
+        all_r_acc = []
 
         # Compute rewards for all trajectories
         trajectory_rewards = []
@@ -307,10 +322,11 @@ class Stage2GRPOEngine:
             composite = self.lambda_acc * r_acc + self.lambda_causal * r_causal
             trajectory_rewards.append(composite)
             all_rewards.append(composite.mean().item())
+            all_r_acc.append(r_acc.mean().item())
 
         # Stack rewards: (G, B) -> compute per-sample advantages
         rewards_tensor = torch.stack(trajectory_rewards, dim=0)  # (G, B)
-        advantages = self.grpo_loss.compute_advantages(rewards_tensor.mean(dim=1))
+        advantages = self.grpo_loss.compute_advantages(rewards_tensor)
 
         # Policy gradient update
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
@@ -332,7 +348,7 @@ class Stage2GRPOEngine:
             loss_dict = self.grpo_loss(
                 log_probs=curr_log_probs,
                 old_log_probs=old_log_probs,
-                advantages=advantages[g:g+1].expand(curr_log_probs.shape[0]),
+                advantages=advantages[g],
                 sequence_mask=seq_mask,
             )
             total_loss = total_loss + loss_dict["loss"] / self.group_size
@@ -340,16 +356,21 @@ class Stage2GRPOEngine:
         return {
             "loss": total_loss,
             "mean_reward": sum(all_rewards) / len(all_rewards),
-            "mean_r_acc": trajectory_rewards[0].mean().item() if trajectory_rewards else 0,
+            "mean_r_acc": sum(all_r_acc) / len(all_r_acc) if all_r_acc else 0,
         }
+
+    def _vlm_batch_kwargs(self, batch: Dict) -> Dict[str, torch.Tensor]:
+        return batch_vlm_kwargs(batch, self.device)
 
     def train(self):
         logger.info(f"Starting Stage II CCR-GRPO: {self.total_steps} steps")
+        self.model.to(self.device)
         self.model.vlm.train()
         self.model.memory_sampler.eval()
 
         data_iter = iter(self.train_dataloader)
         running_reward = 0.0
+        self.optimizer.zero_grad()
 
         for step in range(1, self.total_steps + 1):
             try:
@@ -358,15 +379,13 @@ class Stage2GRPOEngine:
                 data_iter = iter(self.train_dataloader)
                 batch = next(data_iter)
 
-            self.optimizer.zero_grad()
-
             with autocast(dtype=self.amp_dtype, enabled=self.use_amp):
                 result = self._train_step(batch)
                 loss = result["loss"] / self.gradient_accumulation_steps
 
             loss.backward()
 
-            if step % self.gradient_accumulation_steps == 0:
+            if step % self.gradient_accumulation_steps == 0 or step == self.total_steps:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     [p for p in self.model.vlm.parameters() if p.requires_grad],
                     self.max_grad_norm,
@@ -389,22 +408,22 @@ class Stage2GRPOEngine:
             if step % self.save_interval == 0:
                 self.checkpointer.save(
                     {
-                        "vlm_lora": {
-                            n: p.data for n, p in self.model.vlm.named_parameters()
-                            if p.requires_grad
-                        },
+                        "vlm_lora": lora_state_dict(self.model.vlm),
+                        "memory_sampler": self.model.memory_sampler.state_dict(),
                     },
-                    step, tag="stage2",
+                    step,
+                    tag="stage2",
                 )
 
         # Final save
         self.checkpointer.save(
             {
-                "vlm_lora": {
-                    n: p.data for n, p in self.model.vlm.named_parameters()
-                    if p.requires_grad
-                },
+                "vlm_lora": lora_state_dict(self.model.vlm),
+                "memory_sampler": self.model.memory_sampler.state_dict(),
             },
             self.total_steps, tag="stage2_final",
         )
         logger.info("Stage II CCR-GRPO complete")
+
+
+CCRGRPOEngine = Stage2GRPOEngine

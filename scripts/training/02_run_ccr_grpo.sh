@@ -8,7 +8,7 @@ MODEL_CONFIG="${PROJECT_ROOT}/configs/models/qwen3_vl_8b.yaml"
 OUTPUT_DIR="${PROJECT_ROOT}/outputs/stage2_ccr"
 
 # Stage I checkpoint (P_phi weights)
-STAGE1_CKPT="${PROJECT_ROOT}/outputs/stage1_mqpm/fold_0/checkpoint_best"
+STAGE1_CKPT="${PROJECT_ROOT}/outputs/stage1_mqpm/fold_0/checkpoint_best.pt"
 
 NUM_GPUS=4
 MASTER_PORT=${MASTER_PORT:-29501}

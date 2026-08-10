@@ -24,6 +24,7 @@ import logging
 from core.builder import MedSynapseV
 from eval.regex_extractor import AnswerExtractor
 from eval.metrics import compute_metrics, aggregate_results
+from utils.vlm import batch_vlm_kwargs, extract_generated_token_ids
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ class Evaluator:
             outputs = self.model.vlm.generate(
                 inputs_embeds=gen_embeds,
                 attention_mask=gen_mask,
+                **batch_vlm_kwargs(batch, self._device),
                 max_new_tokens=self.max_new_tokens,
                 temperature=self.temperature,
                 top_p=self.top_p,
@@ -131,8 +133,12 @@ class Evaluator:
                 return_dict_in_generate=True,
             )
 
-            input_len = gen_embeds.shape[1]
-            gen_ids = outputs.sequences[:, input_len:]
+            prompt_width = batch["input_ids"].shape[1]
+            gen_ids = extract_generated_token_ids(
+                outputs.sequences,
+                prompt_width,
+                prompt_ids=batch["input_ids"],
+            )
 
             for i in range(gen_ids.shape[0]):
                 pred_text = self.model.processor.tokenizer.decode(
@@ -144,13 +150,26 @@ class Evaluator:
                 if isinstance(batch.get("task_type"), list):
                     sample_task = batch["task_type"][i]
 
-                pred_answer = self.extractor.extract(pred_text, sample_task)
+                options = batch["options"][i] if isinstance(batch.get("options"), list) else None
+                pred_answer = self.extractor.extract(
+                    pred_text,
+                    sample_task,
+                    options=options,
+                    ground_truth=gt,
+                )
+                gt_answer = self.extractor.extract(
+                    str(gt),
+                    sample_task,
+                    options=options,
+                    ground_truth=gt,
+                ) or gt
                 all_predictions.append(pred_answer)
-                all_ground_truths.append(gt)
+                all_ground_truths.append(gt_answer)
                 all_results.append({
                     "prediction": pred_answer,
                     "raw_output": pred_text,
-                    "ground_truth": gt,
+                    "ground_truth": gt_answer,
+                    "raw_ground_truth": gt,
                     "task_type": sample_task,
                     "question": batch["question"][i] if isinstance(batch.get("question"), list) else "",
                 })

@@ -6,7 +6,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 EVAL_CONFIG="${PROJECT_ROOT}/configs/datasets/eval_benchmarks.yaml"
 MODEL_CONFIG="${PROJECT_ROOT}/configs/models/qwen3_vl_8b.yaml"
 
-CHECKPOINT="${1:-${PROJECT_ROOT}/outputs/stage3_imt/fold_0/checkpoint_best}"
+CHECKPOINT="${1:-${PROJECT_ROOT}/outputs/stage3_imt/fold_0/checkpoint_best.pt}"
 
 if [ ! -d "${CHECKPOINT}" ] && [ ! -f "${CHECKPOINT}" ]; then
     echo "[ERROR] Checkpoint not found: ${CHECKPOINT}"

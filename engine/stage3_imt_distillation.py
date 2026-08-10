@@ -11,6 +11,7 @@ from tqdm import tqdm
 from losses.jsd_loss import JSDLoss
 from engine.lr_scheduler import build_optimizer_and_scheduler
 from utils.checkpointer import CheckpointManager
+from utils.vlm import batch_vlm_kwargs, extract_generated_token_ids, lora_state_dict
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class Stage3DistillationEngine:
         self.eval_dataloader = eval_dataloader
         self.config = config or {}
         self.output_dir = output_dir
-        self.device = device or torch.device("cuda")
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.local_rank = local_rank
 
         os.makedirs(output_dir, exist_ok=True)
@@ -56,7 +57,7 @@ class Stage3DistillationEngine:
         self.epochs = train_cfg.get("epochs", 3)
         self.gradient_accumulation_steps = train_cfg.get("gradient_accumulation_steps", 2)
         self.max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
-        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32"
+        self.use_amp = train_cfg.get("mixed_precision", "bf16") != "fp32" and self.device.type == "cuda"
         self.amp_dtype = torch.bfloat16
 
         log_cfg = self.config.get("logging", {})
@@ -127,6 +128,7 @@ class Stage3DistillationEngine:
             outputs = self.model.vlm(
                 inputs_embeds=full_embeds,
                 attention_mask=full_mask,
+                **self._vlm_batch_kwargs(batch),
                 return_dict=True,
             )
 
@@ -171,6 +173,7 @@ class Stage3DistillationEngine:
         outputs = self.model.vlm(
             inputs_embeds=full_embeds,
             attention_mask=full_mask,
+            **self._vlm_batch_kwargs(batch),
             return_dict=True,
         )
 
@@ -200,6 +203,7 @@ class Stage3DistillationEngine:
         outputs = self.model.vlm.generate(
             inputs_embeds=injected["inputs_embeds"],
             attention_mask=injected["attention_mask"],
+            **self._vlm_batch_kwargs(batch),
             max_new_tokens=self.max_gen_len,
             do_sample=True,
             temperature=self.temperature,
@@ -208,18 +212,29 @@ class Stage3DistillationEngine:
         )
 
         # Extract generated portion only
-        gen_ids = outputs.sequences[:, injected["inputs_embeds"].shape[1]:]
+        gen_ids = extract_generated_token_ids(
+            outputs.sequences,
+            context_length=batch["input_ids"].shape[1],
+            prompt_ids=batch["input_ids"],
+        )
         return gen_ids
 
     def _forward_step(self, batch: Dict) -> Dict[str, torch.Tensor]:
         """Single distillation step: dual-branch JSD alignment."""
-        images = batch.get("pixel_values")
+        batch = {
+            k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
+        images = batch.get("pixel_values_medsam", batch.get("pixel_values"))
         if images is not None:
             images = images.to(self.device)
 
         # Teacher: privileged memory from E_ana + P_phi (frozen)
         with torch.no_grad():
-            mem_output = self.model.generate_memory_privileged(images)
+            mem_output = self.model.generate_memory_privileged(
+                images,
+                concept_prompts=batch.get("medsam3_prompt"),
+            )
             memory_pri = mem_output["memory"]
 
         # Student: autonomous memory from A_psi (trainable)
@@ -251,8 +266,12 @@ class Stage3DistillationEngine:
 
         return loss_dict
 
+    def _vlm_batch_kwargs(self, batch: Dict) -> Dict[str, torch.Tensor]:
+        return batch_vlm_kwargs(batch, self.device)
+
     def train(self):
         logger.info(f"Starting Stage III IMT distillation: {self.epochs} epochs")
+        self.model.to(self.device)
         self.model.autonomous_module.train()
         # Freeze everything except A_psi
         self.model.vlm.eval()
@@ -303,7 +322,13 @@ class Stage3DistillationEngine:
 
                     if self.global_step % self.save_interval == 0:
                         self.checkpointer.save(
-                            {"autonomous_module": self.model.autonomous_module.state_dict()},
+                            {
+                                "vlm_lora": lora_state_dict(self.model.vlm),
+                                "autonomous_module": self.model.autonomous_module.state_dict(),
+                                "memory_sampler": self.model.memory_sampler.state_dict()
+                                if self.model.memory_sampler is not None
+                                else {},
+                            },
                             self.global_step, tag="stage3",
                         )
 
@@ -313,7 +338,16 @@ class Stage3DistillationEngine:
             )
 
         self.checkpointer.save(
-            {"autonomous_module": self.model.autonomous_module.state_dict()},
+            {
+                "vlm_lora": lora_state_dict(self.model.vlm),
+                "autonomous_module": self.model.autonomous_module.state_dict(),
+                "memory_sampler": self.model.memory_sampler.state_dict()
+                if self.model.memory_sampler is not None
+                else {},
+            },
             self.global_step, tag="stage3_final",
         )
         logger.info("Stage III IMT distillation complete")
+
+
+IMTDistillationEngine = Stage3DistillationEngine

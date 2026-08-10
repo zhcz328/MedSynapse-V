@@ -152,7 +152,7 @@ class QwenVisionFeatureExtractor(nn.Module):
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        image_token_id: int = 151655,
+        image_token_id: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Complete pipeline: extract hidden states → isolate visual tokens → return.
@@ -167,7 +167,19 @@ class QwenVisionFeatureExtractor(nn.Module):
             attention_mask=attention_mask,
         )
 
+        if image_token_id is None:
+            image_token_id = self._image_token_id()
         vis_mask = self.extract_visual_token_mask(input_ids, image_token_id)
         visual_features = self.pool_visual_features(hidden, vis_mask)
 
         return visual_features
+
+    def _image_token_id(self) -> int:
+        configs = [getattr(self.model, "config", None)]
+        base_model = getattr(self.model, "base_model", None)
+        if base_model is not None:
+            configs.append(getattr(base_model, "config", None))
+        for cfg in configs:
+            if cfg is not None and getattr(cfg, "image_token_id", None) is not None:
+                return int(cfg.image_token_id)
+        return 151655

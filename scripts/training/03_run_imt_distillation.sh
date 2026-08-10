@@ -7,7 +7,7 @@ MODEL_CONFIG="${PROJECT_ROOT}/configs/models/qwen3_vl_8b.yaml"
 OUTPUT_DIR="${PROJECT_ROOT}/outputs/stage3_imt"
 
 # Stage II checkpoint (VLM + LoRA + P_phi)
-STAGE2_CKPT="${PROJECT_ROOT}/outputs/stage2_ccr/fold_0/checkpoint_best"
+STAGE2_CKPT="${PROJECT_ROOT}/outputs/stage2_ccr/fold_0/checkpoint_best.pt"
 
 NUM_GPUS=4
 MASTER_PORT=${MASTER_PORT:-29502}

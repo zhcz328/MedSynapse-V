@@ -47,6 +47,16 @@ class AccuracyReward:
         ratio = SequenceMatcher(None, pred, target).ratio()
         return ratio >= self.fuzzy_threshold
 
+    def extract_yes_no(self, text: str) -> Optional[str]:
+        text = text.strip().lower()
+        for token in re.findall(r"\b(yes|no|true|false)\b", text):
+            if token == "true":
+                return "yes"
+            if token == "false":
+                return "no"
+            return token
+        return None
+
     def compute(
         self,
         predictions: List[str],
@@ -68,11 +78,16 @@ class AccuracyReward:
         for i, (pred, gt) in enumerate(zip(predictions, ground_truths)):
             task_type = task_types[i] if task_types else "closed_ended"
 
-            if task_type == "closed_ended":
+            gt_text = str(gt)
+            gt_yes_no = self.extract_yes_no(gt_text)
+            if gt_yes_no is not None and task_type != "multi_choice":
+                pred_yes_no = self.extract_yes_no(pred)
+                reward = 1.0 if pred_yes_no == gt_yes_no else 0.0
+            elif task_type in {"closed_ended", "multi_choice"}:
                 pred_option = self.extract_option(pred)
-                gt_option = gt.strip().upper()
+                gt_option = gt_text.strip().upper()
                 if len(gt_option) > 1:
-                    gt_option = self.extract_option(gt) or gt_option[0]
+                    gt_option = self.extract_option(gt_text) or gt_option[0]
                 reward = 1.0 if pred_option == gt_option else 0.0
             else:
                 reward = 1.0 if self.fuzzy_match(pred, gt) else 0.0

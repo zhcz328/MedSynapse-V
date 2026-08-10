@@ -22,6 +22,7 @@ OPTION_PATTERNS = [
 
 # Fallback: isolated letter at start of response
 FALLBACK_PATTERN = re.compile(r"^[^a-zA-Z]*([A-E])\b")
+YES_NO_PATTERN = re.compile(r"\b(yes|no|true|false)\b", re.IGNORECASE)
 
 
 def extract_option_letter(text: str) -> Optional[str]:
@@ -67,6 +68,18 @@ def extract_open_ended_answer(text: str) -> str:
     return text
 
 
+def extract_yes_no(text: str) -> Optional[str]:
+    match = YES_NO_PATTERN.search(text.strip())
+    if not match:
+        return None
+    value = match.group(1).lower()
+    if value == "true":
+        return "yes"
+    if value == "false":
+        return "no"
+    return value
+
+
 def fuzzy_match_answer(
     prediction: str,
     candidates: List[str],
@@ -104,7 +117,7 @@ def extract_answer(
     For closed-ended: extract option letter, with fuzzy fallback.
     For open-ended: normalize and return the response.
     """
-    if task_type in ("closed_ended", "multi_choice"):
+    if task_type == "multi_choice" or options:
         letter = extract_option_letter(text)
         if letter is not None:
             return letter
@@ -119,5 +132,29 @@ def extract_answer(
                     return labels[idx]
 
         return ""
-    else:
-        return extract_open_ended_answer(text)
+
+    if task_type == "closed_ended":
+        yes_no = extract_yes_no(text)
+        if yes_no is not None:
+            return yes_no
+        letter = extract_option_letter(text)
+        if letter is not None:
+            return letter
+
+    return extract_open_ended_answer(text)
+
+
+class AnswerExtractor:
+    def extract(
+        self,
+        text: str,
+        task_type: str = "closed_ended",
+        options: Optional[List[str]] = None,
+        ground_truth: Optional[str] = None,
+    ) -> str:
+        return extract_answer(
+            text,
+            task_type=task_type,
+            options=options,
+            ground_truth=ground_truth,
+        )

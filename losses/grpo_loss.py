@@ -37,13 +37,18 @@ class GRPOLoss(nn.Module):
         A_hat_i = (R(o_i) - mu_G) / (sigma_G + eps)
 
         Args:
-            rewards: (G,) reward for each trajectory in the group
+            rewards: (G,) or (G, B) reward for each trajectory in the group
 
         Returns:
-            advantages: (G,) normalized advantages
+            advantages: same shape as rewards
         """
-        mu = rewards.mean()
-        sigma = rewards.std()
+        if rewards.dim() == 1:
+            mu = rewards.mean()
+            sigma = rewards.std(unbiased=False)
+            return (rewards - mu) / (sigma + self.advantage_eps)
+
+        mu = rewards.mean(dim=0, keepdim=True)
+        sigma = rewards.std(dim=0, unbiased=False, keepdim=True)
         return (rewards - mu) / (sigma + self.advantage_eps)
 
     def forward(
